@@ -9,6 +9,7 @@ from local_agent.mcp_client import (
     MCPToolNotAllowedError,
     MCPToolExecutionError,
 )
+from local_agent.agent import Agent, mcp_to_ollama_tool
 
 __version__ = "0.1.0"
 
@@ -20,4 +21,6 @@ __all__ = [
     "MCPConnectionError",
     "MCPToolNotAllowedError",
     "MCPToolExecutionError",
+    "Agent",
+    "mcp_to_ollama_tool",
 ]

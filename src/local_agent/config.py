@@ -10,7 +10,7 @@ class Config:
 
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     default_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-    request_timeout: float = float(os.getenv("OLLAMA_TIMEOUT", "60.0"))
+    request_timeout: float = float(os.getenv("OLLAMA_TIMEOUT", "120.0"))
 
     # MCP Filesystem Server settings
     workspace_dir: str = os.getenv(
@@ -30,3 +30,5 @@ class Config:
     )
     # Result size cap (security rule)
     max_tool_result_chars: int = int(os.getenv("MAX_TOOL_RESULT_CHARS", "10000"))
+    # Max loop iterations (security / runaway prevention)
+    max_iterations: int = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
