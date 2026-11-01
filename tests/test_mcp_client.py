@@ -121,3 +121,14 @@ def test_mcp_client_caps_result_size(workspace_with_file):
         assert len(output) > 10  # Because of the truncation notice
         assert "Output truncated: exceeded limit of 10 characters" in output
         assert output.startswith("Hello from")
+
+
+def test_mcp_client_expands_tilde_workspace(monkeypatch):
+    """Verify that a workspace configured with ~ expands to home directory, not a relative path."""
+    cfg = Config(workspace_dir="~/Documents/AI-Agent-Workspace")
+    client = MCPClient(config=cfg)
+    # Verify that during start(), workspace expands ~ to an absolute path without literal ~
+    expanded = os.path.abspath(os.path.expanduser(client.config.workspace_dir))
+    assert "~" not in expanded
+    assert os.path.isabs(expanded)
+

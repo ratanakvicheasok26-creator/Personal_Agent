@@ -52,8 +52,8 @@ class MCPClient:
         if self._is_running:
             return
 
-        # Ensure the configured workspace directory exists
-        workspace = os.path.abspath(self.config.workspace_dir)
+        # Ensure the configured workspace directory exists and expand '~'
+        workspace = os.path.abspath(os.path.expanduser(self.config.workspace_dir))
         os.makedirs(workspace, exist_ok=True)
 
         ready_event = threading.Event()
@@ -101,9 +101,15 @@ class MCPClient:
 
         if startup_error:
             self.stop()
+            err = startup_error[0]
+            if isinstance(err, FileNotFoundError):
+                raise MCPConnectionError(
+                    "Failed to start MCP filesystem server: 'npx' executable not found.\n"
+                    "Please ensure Node.js and npm/npx are installed on your Linux system."
+                ) from err
             raise MCPConnectionError(
-                f"Failed to start MCP filesystem server: {startup_error[0]}"
-            )
+                f"Failed to start MCP filesystem server: {err}"
+            ) from err
 
     def stop(self, timeout: float = 5.0) -> None:
         """Shut down the MCP server process cleanly."""

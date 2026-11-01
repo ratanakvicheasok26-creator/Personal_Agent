@@ -262,6 +262,167 @@ def test_agent_handles_multiple_tool_calls_in_one_turn():
     assert len(tool_messages) == 2
 
 
+def test_schema_adapter_missing_fields():
+    """Verify that adapter handles missing or empty fields safely."""
+    minimal_tool = {"name": "minimal"}
+    ollama_tool = mcp_to_ollama_tool(minimal_tool)
+
+    assert ollama_tool["type"] == "function"
+    assert ollama_tool["function"]["name"] == "minimal"
+    assert ollama_tool["function"]["description"] == ""
+    assert ollama_tool["function"]["parameters"] == {}
+
+
+def test_agent_tool_execution_when_mcp_client_is_none():
+    """Verify that calling a tool without an MCP client returns a graceful error."""
+    agent = Agent(mcp_client=None)
+    result = agent._execute_tool("read_file", {"path": "test.txt"})
+
+    assert "Error: MCP client is not available" in result
+
+
+def test_agent_rejects_non_dict_arguments():
+    """Verify that malformed non-dictionary tool arguments are caught and reported."""
+    mock_mcp = MockMCPClient()
+    agent = Agent(mcp_client=mock_mcp)
+
+    result = agent._execute_tool("read_file", "not-a-dict")  # type: ignore[arg-type]
+    assert "Argument Error" in result
+    assert len(mock_mcp.executed_tools) == 0
+
+
+def test_agent_parses_stringified_json_arguments():
+    """Verify agent parses stringified JSON arguments returned by some models."""
+    mock_mcp = MockMCPClient(tool_results={"read_file": "content"})
+    mock_ollama = MockOllamaClient(
+        responses=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path": "config.json"}',
+                        }
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Read config successfully.",
+            },
+        ]
+    )
+
+    agent = Agent(ollama_client=mock_ollama, mcp_client=mock_mcp)
+    messages = [{"role": "user", "content": "Read config.json"}]
+
+    answer = agent.run_turn(messages)
+    assert "Read config successfully" in answer
+    assert mock_mcp.executed_tools == [("read_file", {"path": "config.json"})]
+
+
+def test_agent_handles_tool_execution_error_gracefully():
+    """Verify that tool execution failures (e.g. file not found) are fed back safely to the model."""
+    class FailingMCPClient(MockMCPClient):
+        def call_tool(self, name: str, arguments: dict[str, Any] | None = None, timeout: float = 30.0) -> str:
+            from local_agent.mcp_client import MCPToolExecutionError
+            raise MCPToolExecutionError("File not found in workspace")
+
+    mock_mcp = FailingMCPClient()
+    mock_ollama = MockOllamaClient(
+        responses=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "read_file", "arguments": {"path": "missing.txt"}}}
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "The file missing.txt does not exist in the workspace.",
+            },
+        ]
+    )
+
+    agent = Agent(ollama_client=mock_ollama, mcp_client=mock_mcp)
+    messages = [{"role": "user", "content": "Read missing.txt"}]
+
+    answer = agent.run_turn(messages)
+    assert "does not exist" in answer
+
+    # Verify tool error message was returned
+    tool_msg = next(m for m in messages if m.get("role") == "tool")
+    assert "Tool Execution Error" in tool_msg["content"]
+    assert "File not found" in tool_msg["content"]
+
+
+def test_agent_rolls_back_history_on_mid_turn_error():
+    """Verify that an exception mid-turn rolls back messages so history isn't corrupted."""
+    class FailingOnSecondCallOllama(MockOllamaClient):
+        def chat(self, messages, model=None, tools=None):
+            if len(self.history_snapshots) == 0:
+                # First call returns tool call
+                return super().chat(messages, model, tools)
+            # Second call raises unexpected error
+            from local_agent.ollama_client import OllamaTimeoutError
+            raise OllamaTimeoutError("Timed out on synthesizing response")
+
+    mock_mcp = MockMCPClient(tool_results={"read_file": "content"})
+    mock_ollama = FailingOnSecondCallOllama(
+        responses=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "read_file", "arguments": {"path": "a.txt"}}}
+                ],
+            }
+        ]
+    )
+
+    agent = Agent(ollama_client=mock_ollama, mcp_client=mock_mcp)
+    initial_messages = [{"role": "user", "content": "Read a.txt"}]
+    test_messages = list(initial_messages)
+
+    from local_agent.ollama_client import OllamaTimeoutError
+    with pytest.raises(OllamaTimeoutError):
+        agent.run_turn(test_messages)
+
+    # test_messages must be completely restored to initial_messages without dangling tool calls
+    assert test_messages == initial_messages
+
+
+def test_agent_handles_malformed_tool_call_dictionaries():
+    """Verify agent handles null/empty/non-dict tool_call objects safely without crashing."""
+    mock_mcp = MockMCPClient()
+    mock_ollama = MockOllamaClient(
+        responses=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    "not-a-dict-call",
+                    {"function": None},
+                    {"function": {"name": "read_file", "arguments": None}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Handled malformed calls cleanly.",
+            },
+        ]
+    )
+
+    agent = Agent(ollama_client=mock_ollama, mcp_client=mock_mcp)
+    messages = [{"role": "user", "content": "Hello"}]
+
+    answer = agent.run_turn(messages)
+    assert "Handled malformed calls cleanly" in answer
+
+
 @pytest.mark.skipif(
     os.getenv("CI") == "true",
     reason="Live integration test with Ollama and Filesystem MCP server",
